@@ -52,6 +52,8 @@ GlobalPlanner::~GlobalPlanner()
         delete path_maker_;
     if (dsrv_)
         delete dsrv_;
+    if (orientation_filter_)
+      delete orientation_filter_;
 }
 
 void GlobalPlanner::initialize(std::string name, costmap_2d::Costmap2DROS* costmap_ros)
@@ -105,6 +107,8 @@ void GlobalPlanner::initialize(std::string name, costmap_2d::Costmap2D* costmap,
             path_maker_ = new GradientPath(p_calc_);
 
         orientation_filter_ = new OrientationFilter();
+
+        potential_array_ = nullptr;
 
         plan_pub_ = private_nh.advertise<nav_msgs::Path>("plan", 1);
         potential_pub_ = private_nh.advertise<nav_msgs::OccupancyGrid>("potential", 1);
@@ -279,9 +283,9 @@ bool GlobalPlanner::makePlan(const geometry_msgs::PoseStamped& set_start,
     {
       potential_array_ = new float[nx * ny];
     }
-    catch (std::bad_alloc)
+    catch (...)
     {
-      ROS_ERROR("global planner new float[nx * ny],std::bad_alloc.");
+      ROS_ERROR("global planner new float[nx * ny] error.");
       return false;
     }
 
@@ -324,7 +328,7 @@ bool GlobalPlanner::makePlan(const geometry_msgs::PoseStamped& set_start,
         else
         {
           if(plan_timer == 1)
-            ROS_ERROR("Failed to get a plan.");
+            ROS_INFO("Failed to get a plan.");
         }
         plan_timer++;
         this->planner_->setSafeControl(false);
@@ -339,7 +343,7 @@ bool GlobalPlanner::makePlan(const geometry_msgs::PoseStamped& set_start,
     }
     if(potential_array_)
     {
-      delete potential_array_;
+      delete[] potential_array_;
       potential_array_ = nullptr;
     }
     //publish the plan for visualization purposes
