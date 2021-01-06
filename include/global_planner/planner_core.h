@@ -53,6 +53,11 @@
 #include <global_planner/orientation_filter.h>
 #include <global_planner/GlobalPlannerConfig.h>
 
+#include <fstream>
+#include <ctime>
+
+#define RECORD_LOG(x) {if(this->record_log_){this->log_<<x<<std::endl;}}
+
 //#define POT_HIGH 1.0e10        // unassigned cell potential
 
 namespace global_planner {
@@ -123,6 +128,14 @@ class GlobalPlanner : public nav_core::BaseGlobalPlanner {
         int optimizationPath(std::vector<geometry_msgs::PoseStamped>& plan,double movement_angle_range=M_PI_4);
 
         void optimizationOrientation(std::vector<geometry_msgs::PoseStamped>& plan);
+
+        void insertPointForPath(std::vector<geometry_msgs::PoseStamped> &plan);
+
+        void cutPathPoint(std::vector<geometry_msgs::PoseStamped> &plan);
+
+        bool isLineFree(const geometry_msgs::PoseStamped pose1, const geometry_msgs::PoseStamped pose2);
+
+        bool collision(const double x, const double y);
 
         double inline normalizeAngle(double val,double min = -M_PI,double max = M_PI)
         {
@@ -216,7 +229,7 @@ class GlobalPlanner : public nav_core::BaseGlobalPlanner {
         PotentialCalculator* p_calc_;
         Expander* planner_;
         Traceback* path_maker_;
-        OrientationFilter* orientation_filter_;
+//        OrientationFilter* orientation_filter_;
 
         bool publish_potential_;
         ros::Publisher potential_pub_;
@@ -233,6 +246,10 @@ class GlobalPlanner : public nav_core::BaseGlobalPlanner {
 
         dynamic_reconfigure::Server<global_planner::GlobalPlannerConfig> *dsrv_;
         void reconfigureCB(global_planner::GlobalPlannerConfig &config, uint32_t level);
+
+        bool record_;
+        std::ofstream log_;
+        bool record_log_;
 
 };
 

@@ -52,8 +52,10 @@ GlobalPlanner::~GlobalPlanner()
         delete path_maker_;
     if (dsrv_)
         delete dsrv_;
-    if (orientation_filter_)
-      delete orientation_filter_;
+//    if (orientation_filter_)
+//      delete orientation_filter_;
+    if(!log_)
+      log_.close();
 }
 
 void GlobalPlanner::initialize(std::string name, costmap_2d::Costmap2DROS* costmap_ros)
@@ -65,6 +67,41 @@ void GlobalPlanner::initialize(std::string name, costmap_2d::Costmap2D* costmap,
 {
     if (!initialized_)
     {
+        record_ = false;
+        record_log_ = false;
+        if(record_)
+        {
+          std::stringstream ss;
+          std::time_t nowtime;
+          nowtime = std::time(nullptr);
+
+          ss << nowtime;
+          std::string tim_str;
+          ss >> tim_str;
+
+          std::string log_name = "/home/firefly/nav_log/";
+//          std::string log_name = "/home/lhh/nav_log/";
+          log_name+=tim_str;
+          log_name+="_global_planner.log";
+          log_.open(log_name,std::ios::out); //|std::ios::app
+
+          if(!log_)
+          {
+            ROS_ERROR("open global_planner.log fail.");
+          }
+          else
+          {
+            record_log_ = true;
+            RECORD_LOG("Welcome to use the smartest robot in the world.");
+            std::time_t nowtime;
+            struct tm* p;
+            nowtime = std::time(nullptr);
+            p = std::localtime(&nowtime);
+            log_ << p->tm_year+1900 << "-" << p->tm_mon+1 << "-" << p->tm_mday << "," <<
+            p->tm_hour << ":" << p->tm_min << ":" << p->tm_sec << std::endl;
+          }
+        }
+
         ros::NodeHandle private_nh("~/" + name);
         costmap_ = costmap;
         frame_id_ = frame_id;
@@ -106,7 +143,7 @@ void GlobalPlanner::initialize(std::string name, costmap_2d::Costmap2D* costmap,
         else
             path_maker_ = new GradientPath(p_calc_);
 
-        orientation_filter_ = new OrientationFilter();
+//        orientation_filter_ = new OrientationFilter();
 
         potential_array_ = nullptr;
 
@@ -141,8 +178,8 @@ void GlobalPlanner::reconfigureCB(global_planner::GlobalPlannerConfig& config, u
     planner_->setNeutralCost(config.neutral_cost);
     planner_->setFactor(config.cost_factor);
     publish_potential_ = config.publish_potential;
-    orientation_filter_->setMode(config.orientation_mode);
-    orientation_filter_->setWindowSize(config.orientation_window_size);
+//    orientation_filter_->setMode(config.orientation_mode);
+//    orientation_filter_->setWindowSize(config.orientation_window_size);
 }
 
 void GlobalPlanner::clearRobotCell(const geometry_msgs::PoseStamped& global_pose, unsigned int mx, unsigned int my)
@@ -212,24 +249,18 @@ bool GlobalPlanner::makePlan(const geometry_msgs::PoseStamped& set_start,
     //clear the plan, just in case
     plan.clear();
 
+    //until tf can handle transforming things that are way in the past... we'll require the goal to be in our global frame
+    if (set_goal.header.frame_id != frame_id_)
+    {
+        ROS_ERROR("The goal pose passed to this planner must be in the %s frame.  It is instead in the %s frame.", frame_id_.c_str(), set_goal.header.frame_id.c_str());
+        return false;
+    }
+
     geometry_msgs::PoseStamped start_new;
     geometry_msgs::PoseStamped goal_new;
 
     this->getNearFreePoint(set_start,start_new,tolerance);
     this->getNearFreePoint(set_goal,goal_new,tolerance);
-
-    //until tf can handle transforming things that are way in the past... we'll require the goal to be in our global frame
-    if (goal_new.header.frame_id != frame_id_)
-    {
-        ROS_ERROR("The goal pose passed to this planner must be in the %s frame.  It is instead in the %s frame.", frame_id_.c_str(), goal_new.header.frame_id.c_str());
-        return false;
-    }
-
-    if (start_new.header.frame_id != frame_id_)
-    {
-        ROS_ERROR("The start pose passed to this planner must be in the %s frame.  It is instead in the %s frame.", frame_id_.c_str(), start_new.header.frame_id.c_str());
-        return false;
-    }
 
     double wx = start_new.pose.position.x;
     double wy = start_new.pose.position.y;
@@ -257,7 +288,7 @@ bool GlobalPlanner::makePlan(const geometry_msgs::PoseStamped& set_start,
 
     if (!costmap_->worldToMap(wx, wy, goal_x_i, goal_y_i))
     {
-        ROS_WARN_THROTTLE(1.0,"The goal sent to the global planner is off the global costmap. Planning will always fail to this goal.");
+        ROS_WARN("The goal sent to the global planner is off the global costmap. Planning will always fail to this goal.");
         return false;
     }
     if(old_navfn_behavior_)
@@ -279,27 +310,50 @@ bool GlobalPlanner::makePlan(const geometry_msgs::PoseStamped& set_start,
     p_calc_->setSize(nx, ny);
     planner_->setSize(nx, ny);
     path_maker_->setSize(nx, ny);
+
+    RECORD_LOG(std::endl);
     try
     {
-      potential_array_ = new float[nx * ny];
+      RECORD_LOG("new potential array");
+      potential_array_ = new float[static_cast<unsigned int>(nx) * static_cast<unsigned int>(ny)];
+      RECORD_LOG("new potential array done");
     }
     catch (...)
     {
       ROS_ERROR("global planner new float[nx * ny] error.");
+      if(potential_array_ != nullptr)
+      {
+        delete[] potential_array_;
+        potential_array_ = nullptr;
+      }
+      RECORD_LOG("new potential array error");
       return false;
     }
+
+    RECORD_LOG("new potential array ok");
 
     if(outline_map_)
         outlineMap(costmap_->getCharMap(), nx, ny, costmap_2d::LETHAL_OBSTACLE);
 
-    uint8_t plan_timer = 0;
+    RECORD_LOG("outlineMap ok");
+
+    int plan_timer = 0;
     this->planner_->setSafeControl(true);
     while(plan_timer < 2 && plan.empty())
     {
         //计算可行点矩阵，距离机器人越近值越小
-        bool found_legal = planner_->calculatePotentials(costmap_->getCharMap(),
-                                                         start_x, start_y, goal_x, goal_y,
-                                                         nx * ny * 2, potential_array_);
+        bool found_legal = planner_->calculatePotentials(costmap_->getCharMap(), start_x, start_y, goal_x, goal_y, nx * ny * 2, potential_array_);
+
+        RECORD_LOG("Potentials ok");
+        RECORD_LOG("legal:");
+        if(found_legal)
+        {
+          RECORD_LOG(1);
+        }
+        else
+        {
+          RECORD_LOG(0);
+        }
 
         if(!old_navfn_behavior_)
             planner_->clearEndpoint(costmap_->getCharMap(), potential_array_, goal_x_i, goal_y_i, 2);
@@ -318,6 +372,10 @@ bool GlobalPlanner::makePlan(const geometry_msgs::PoseStamped& set_start,
                 geometry_msgs::PoseStamped goal_copy = goal_new;
                 goal_copy.header.stamp = ros::Time::now();
                 plan.push_back(goal_copy);
+
+                RECORD_LOG("plan_timer:");
+                RECORD_LOG(plan_timer);
+                RECORD_LOG("getPlan ok");
             }
             else
             {
@@ -335,16 +393,25 @@ bool GlobalPlanner::makePlan(const geometry_msgs::PoseStamped& set_start,
     }
     if(!plan.empty())
     {
+      //cut Path Point
+//      cutPathPoint(plan);
+//      RECORD_LOG("cutPathPoint ok");
+//      insertPointForPath(plan);
+//      RECORD_LOG("insertPointForPath ok");
       // optimization path
       this->optimizationPath(plan,M_PI/10);
+      RECORD_LOG("optimizationPath ok");
       // add orientations if needed
       optimizationOrientation(plan);
+      RECORD_LOG("optimizationOrientation ok");
       //orientation_filter_->processPath(start_new, plan);
     }
-    if(potential_array_)
+    if(potential_array_ != nullptr)
     {
+      RECORD_LOG("delete potential_array");
       delete[] potential_array_;
       potential_array_ = nullptr;
+      RECORD_LOG("delete potential_array done");
     }
     //publish the plan for visualization purposes
     publishPlan(plan);
@@ -398,6 +465,127 @@ void GlobalPlanner::optimizationOrientation(std::vector<geometry_msgs::PoseStamp
   {
     plan[i].pose.orientation = tf::createQuaternionMsgFromYaw( atan2( plan[i+1].pose.position.y - plan[i].pose.position.y,
                                                                plan[i+1].pose.position.x - plan[i].pose.position.x ) );
+  }
+}
+
+//检查点是否为障碍物
+bool GlobalPlanner::collision(const double x, const double y)
+{
+  unsigned int mx,my;
+  if(!this->costmap_->worldToMap(x, y, mx, my))
+    return true;
+  if ((mx >= costmap_->getSizeInCellsX()) || (my >= costmap_->getSizeInCellsY()))
+    return true;
+//  if (!this->isAroundFree(mx, my))
+  if (this->costmap_->getCost(mx, my) != costmap_2d::FREE_SPACE)
+    return true;
+  return false;
+}
+
+//检测直线上是否有障碍物
+bool GlobalPlanner::isLineFree(const geometry_msgs::PoseStamped pose1, const geometry_msgs::PoseStamped pose2)
+{
+  std::pair<double, double> p1;
+  p1.first = pose1.pose.position.x;
+  p1.second = pose1.pose.position.y;
+
+  std::pair<double, double> p2;
+  p2.first = pose2.pose.position.x;
+  p2.second = pose2.pose.position.y;
+
+  double resolution = this->costmap_->getResolution();
+
+  std::pair<double, double> ptmp;
+  ptmp.first = 0.0;
+  ptmp.second = 0.0;
+
+  double dist = sqrt( (p2.second-p1.second) * (p2.second-p1.second) +
+                      (p2.first-p1.first) * (p2.first-p1.first) );
+  if (dist < resolution)
+  {
+      return true;
+  }
+  else
+  {
+    int value = int(floor(dist/resolution));
+    double theta = atan2( (p2.second - p1.second), (p2.first - p1.first) );
+    int n = 1;
+    for (int i = 0;i < value; i++)
+    {
+      ptmp.first = p1.first + resolution*cos(theta) * n;
+      ptmp.second = p1.second + resolution*sin(theta) * n;
+      if (collision(ptmp.first, ptmp.second))
+        return false;
+      n++;
+    }
+    return true;
+  }
+}
+
+//路径拉直
+void GlobalPlanner::cutPathPoint(std::vector<geometry_msgs::PoseStamped> &plan)
+{
+  size_t current_index = 0;
+  size_t check_index = current_index+2;
+  while(ros::ok())
+  {
+    if( current_index >= plan.size()-2 )
+      return;
+    if( this->isLineFree(plan[current_index], plan[check_index]) ) //点之间无障碍物
+    {
+      std::vector<geometry_msgs::PoseStamped>::iterator it = plan.begin() + static_cast<int>(current_index + 1) ;
+      if(check_index-current_index-1 == 1)
+      {
+        plan.erase(it);
+      }
+      else
+      {
+        plan.erase(it,it+static_cast<int>( check_index-current_index-1) );
+        check_index = current_index + 2;
+      }
+    }
+    else
+    {
+      if(check_index < plan.size()-1 )
+        check_index++;
+      else
+      {
+        current_index++;
+        check_index = current_index + 2;
+      }
+    }
+  }
+}
+
+//路径插点
+void GlobalPlanner::insertPointForPath(std::vector<geometry_msgs::PoseStamped> &plan)
+{
+  std::vector<geometry_msgs::PoseStamped> path_out;
+  if(plan.size() < 2)
+    return;
+  size_t size = plan.size() - 1;
+  geometry_msgs::PoseStamped point = plan[0];
+  double pp_dist = 0.05;
+  for(size_t i=0;i<size;i++)
+  {
+    double theta = atan2(plan[i+1].pose.position.y - plan[i].pose.position.y,
+                         plan[i+1].pose.position.x - plan[i].pose.position.x);
+    size_t insert_size = static_cast<size_t>(this->distance(plan[i+1].pose.position.x, plan[i+1].pose.position.y,
+                                                            plan[i].pose.position.x,plan[i].pose.position.y) / pp_dist + 0.5);
+    for(size_t j=0;j<insert_size;j++)
+    {
+      point.pose.position.x = plan[i].pose.position.x + j * pp_dist * cos(theta);
+      point.pose.position.y = plan[i].pose.position.y + j * pp_dist * sin(theta);
+      path_out.push_back(point);
+    }
+  }
+  path_out.push_back( plan.back() );
+  plan.clear();
+  size = path_out.size();
+  plan.resize(size);
+  for(size_t i=0;i<size;i++)
+  {
+    plan[i] = path_out[i];
   }
 }
 
@@ -507,7 +695,7 @@ bool GlobalPlanner::isAroundFree(unsigned int mx, unsigned int my)
     {
       x = static_cast<int>(mx) + i;
       y = static_cast<int>(my) + j;
-      if(this->costmap_->getCost(static_cast<unsigned int>(x),static_cast<unsigned int>(y)) != costmap_2d::FREE_SPACE)
+      if(this->costmap_->getCost(static_cast<unsigned int>(x),static_cast<unsigned int>(y)) > 50 ) //!= costmap_2d::FREE_SPACE)
         return false;
     }
   }
@@ -522,7 +710,6 @@ void GlobalPlanner::getNearFreePoint(const geometry_msgs::PoseStamped in,
   unsigned int grid_size = static_cast<unsigned int>(tolerance/costmap_->getResolution() + 0.5);
   if(grid_size<1)
   {
-    out = in;
     return;
   }
 
